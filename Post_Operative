@@ -1,0 +1,425 @@
+
+
+## R Markdown
+
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+# packages required
+```{r}
+require(caret)
+require(klaR)
+require(class)
+require(randomForest)
+require(factoextra)
+require(NbClust)
+require(caTools)
+require(ggplot2)
+require(data.table)
+require(cluster)
+require(ROCR)
+```
+
+
+#set seed
+set.seed(5)
+
+# Import dataset
+```{r}
+mldata <- read.csv("post-operative.csv", header = FALSE)
+```
+
+
+#Rename the columns
+```{r}
+names(mldata) <- c("Internal_temp", "Surface_temp", "Oxygen_saturation", "Blood_pressure", "Surf_temp_stability","Int_Temp_Stability", "BP_stability", "Comfort", "Disch_decision")
+str(mldata)
+dim(mldata) # finding the dimension of the dataset which in our case is 90 observation of 9 variables
+```
+
+
+#summarize the class distribution
+```{r}
+percentage <- prop.table(table(mldata$Disch_decision)) * 100
+cbind(freq=table(mldata$Disch_decision), percentage=percentage)
+```
+
+
+#clean data
+
+# We clean the dataset by dropping all the signs(?, %, --, NA) including missing values
+# we ignore discharge decision with label "I" (as it is very less in number and does not have any significance and could imbalance our outcomes)
+```{r}
+mldata[mldata == "?"] <- NA
+mldata[mldata == "I"] <- NA
+mldata[mldata == "A "] <- "A"
+mldata2 <- na.omit(mldata)
+summary(mldata2)
+```
+
+#Summarize the class distribution in clean data
+# one way to visualize clean target data is by creating percentage of target feature. In our case, decision percentage for the label "A" = 72.09% and for label "B" = 27.90%
+```{r}
+percentage <- prop.table(table(mldata2$Disch_decision)) * 100
+decision_percentage <- cbind(freq=table(mldata2$Disch_decision), percentage=percentage)
+decision_percentage
+```
+
+
+
+#Change level in Disch_decision from " A" to "A". when this conversion happens the factor level of  " A" becomes 0, we use factor() to get rid of level 0s.
+```{r}
+mldata2$Disch_decision <- factor(mldata2$Disch_decision)#gets rid of level with 0 value
+#mldata2$Disch_decision
+```
+
+
+
+
+#Change data type for comfort column to integer, (Comfort is integer value per the document in the source website), we are changing Comfort from factor to Numeric type by applying as.character and as.numeric in the same line.
+```{r}
+mldata2$Comfort  <- as.numeric(as.character(mldata2$Comfort))# converts factor to numeric data
+str(mldata2)
+summary(mldata2)
+```
+
+
+## Exploring the data through plots per "the Final project and Exam Guide"
+
+# Using boxplot to find the shape of distribution of column "Comfort", it's  minimum value, center value and high value. Here minimum value is 5, center value is 10 and the high value 15. However, boxplot doesn't seem to give any meaningful interpretation. Hence using barplot.
+```{r}
+boxplot(mldata2$Comfort, main = toupper("Comfort Level"), xlab = "Comfort", ylab = "Comfort score", col = 'orange')
+```
+
+
+
+# All of our data are categorical data, meaning they reflect categories (i.e low, high, medium, excellent, good, etc,.)I am using Barplot to plot the frequency of discharge decision, due to limitation of categorical data. Other plots are not very useful since, most of the data in the column do not show a significant relationship between the features. Since barplot was the only plot that showed a meaningful relationship, I found it significant to represent the data related to number of times patients were admitted or sent home based on the variables such as( internal temperature, blood pressure, surface temperature, etc.).
+```{r}
+bardata <- table(mldata2$Disch_decision)
+bardata
+barplot(bardata, col = c('orange', 'purple'), 
+            main = "Frequency of discharge decision",
+            xlab = "Disch_decision",
+            ylab = "Frequency",
+            ylim = c(0,100),
+            legend.text = c("A = Admit", "S = Stable"))
+```
+
+
+
+#Data Engineering, Feature Extraction and Selection
+
+# Always do your feature selection after splitting the data
+#Data Split
+
+#Split the data on 90/10. 
+I am splittting the data in 90 to 10 ratio. I will use 90% of data to train the machine while use 10 percent to test the machine. I chose this ratio because our data is very small and I would like to train on more data to rule out any overfitting. 
+
+
+```{r}
+#ind <- sample(2, nrow(mldata2), replace = TRUE, prob = c(0.75, 0.25))
+#train <- mldata2[ind == 1,]
+#test <- mldata2[ind == 2, ]
+#test_x <- test[,1:8]
+#test_y <- test[,9]
+sample_size <- floor(0.9* nrow(mldata2))
+sample_size
+train_data<- sample(seq_len(nrow(mldata2)), size = sample_size)
+train_data
+train <- mldata2[train_data,]
+test <- mldata2[-train_data,]
+test_x <- test[,1:8]
+test_y <- test[,9]
+
+```
+
+## Feature Extraction Algorithm
+  
+Random Forest Selection Function  
+# scaling- making data 0 and 1
+```{r}
+data.rf <- randomForest(Disch_decision~., data = train, importance = TRUE)
+data.rf
+#summary(data.rf)
+importance(data.rf)
+varImpPlot(data.rf)
+getTree(data.rf, k =1, labelVar= FALSE)
+```
+*** Explanation of the feature selection: 1. I was not able to effectively visualize the data with the help of graphs and plots because it seemed impossible to create relationship between features and to understand which features are important compared to each other.
+
+Similarly, based on the random forest algorithm(looking at the meanDecreaseAccuracy and MeanDecreaseGini), I select BP_stability, Surface temperature, Internal temperature stability because these are the features with highest value which will give higher prediction accuracy. Or in other words losing these features would greatly impact the accuracy. The more the accuracy of the random forest decreases due to the exclusion (or permutation) of a single variable which in our case is surface temp, BP stability, Internal temp stability, Blood pressure, the more important these variables are deemed, and therefore variables with a large mean decrease in accuracy are more important for classification of the data.
+
+
+## One Hot Encoding/Dummy Variables
+** we used dummy data to manipulate our data, since most of our datasets are categorical, computer wouldn't understand the categories(High, Mid, Low), we dummified it to value between 0 and 1 so that computer can recognize the value and use our data to create algorithms.
+
+** We are dummifying our data using the dummyVars function from the Caret package.
+```{r}
+# https://amunategui.github.io/dummyVar-Walkthrough/
+dummy <- dummyVars("~.", data = train[1:8])  #dummyfying 8 colums only as last column discharge_decision is the outcome)
+dummydata <- data.frame(predict(dummy, newdata = train[1:8])) 
+dummydata2  <- dummydata
+dummydata2
+```
+# Clustering
+I dummified the data so that we could manipulate data to be able to use clusters on them. You can not use categorical data to build clusters. Dummy data will enable me to create cluster.
+
+
+** Did you normalize/scale your data? Explain
+## For our dataset, I couldn't scale the whole dataset because of the fact that most of them are categorical except for Comfort column. hence I normalized(having mean of 0 and std deviation of 1) all data except Comfort column to have them fall within value 0-1 value. For Comfort column, I scaled it at first and then normalized it to fall within 0-1 value.
+
+
+#Scaling the data/ Normalizing the data
+```{r}
+scale_Comfort <- scale(dummydata$Comfort, center = TRUE, scale = TRUE)
+#scale_Comfort
+normalized_Comfort <-((scale_Comfort - min(scale_Comfort)) / (max(scale_Comfort) - min(scale_Comfort)))
+normalized_Comfort
+normal_dummy  <- dummydata
+normal_dummy$Comfort <- normalized_Comfort
+normal_dummy # We will use this data for clustering
+
+```
+
+
+## K-Means Clustering
+***** Explain what K you choose and why 
+- Since our dataset has only two classes of significant decision , I choose to use 2 as k value. This will create two clusters for decision(A and S)
+*** Graph on K means
+
+```{r}
+k_means <- kmeans(normal_dummy, 2,  nstart = 1) # using dummydata as it only has 8 columns and not the decision, you don't want a target label in clustering because its an unsupervised learning
+k_means
+```
+
+
+#compare the result of the k-means cluster
+```{r}
+table(train$Disch_decision, k_means$cluster)
+```
+*** Result of the cluster shows # of "A's"  and "S's" decision that falls in cluster 1 cluster 2(Since two cluster was chosen)
+
+
+# Graph plots for k means
+#Actual metrics used in k-means cluster are Euclidean distance and silhouette width. I chose these two metrics in order to get the distance between two points and to find the characterstics of each cluster in K means cluster. The clusters in the cluster plot are not tigtly grouped together and overlaps. The silhouette width for 2 clusters is little over 0.15, meaning the structure is weak and could well be artificial
+
+```{r}
+fviz_nbclust(normal_dummy,kmeans, method = "silhouette")
+
+fviz_cluster(k_means, data = normal_dummy, geom = "point",
+             stand = FALSE, frame.type = "norm")
+
+fviz_cluster(k_means, data = normal_dummy, geom = "point",
+             stand = FALSE, frame.type = "ellipse")
+
+```
+
+
+
+
+#Agglomerative Clustering
+
+# For Hierarchical clustering, I chose Manhattan distance (metric) to compute an absolute distance between two points in the cluster.The clusters are somewhat tightly clustered but  clusters overlap. The "h" value while cutting dendogram is the height of the clusters where dendograms are cut, it acts similar to k value of the k-means cluster.
+
+```{r}
+d <-dist(normal_dummy, method = "manhattan") #Disssimilarity matrix
+agglom_clust <- hclust(d, method = "ward.D2")# Hierarchical clustering using ward.D2 linkage
+plot(agglom_clust)
+
+groups  <- cutree(agglom_clust, 5) #cut tree into 5 clusters
+rect.hclust(agglom_clust, 5, border = 3:5) # draws dendogram with orange borders around 5 clusters
+fviz_cluster(list(data = normal_dummy, cluster = groups))
+```
+
+#classification
+
+##Graphing each feature
+#Histogram of each feature
+
+# Discharge decision based on Internal_Temperature
+```{r}
+p <- ggplot(mldata2, aes(x = ordered(Internal_temp, levels = c("low", "mid", "high")), fill = Disch_decision))
+p + geom_histogram(stat = "count", position = "stack") +
+ggtitle ("Discharge decision based on internal core temperature") +
+labs(x = "Temperature Category(Degree in centigrade)", y = "frequency", caption = "high (> 37), mid (>= 36 and <= 37), low (< 36)") +
+scale_fill_discrete(name ="Discharge_decision", labels =c("A = Admit","S = stable- send home"))
+```
+
+# Discharge decision based on surface temperature
+```{r}
+p <- ggplot(mldata2, aes(x = ordered(Surface_temp, levels = c("low", "mid", "high")), fill = Disch_decision))
+p + geom_histogram(stat = "count", position = position_dodge()) +
+ggtitle ("Discharge decision based on Surface temperature") +
+labs(x = "Temperature Category (Degree in centigrade)", y = "frequency", caption ="high (> 36.5), mid (>= 36.5 and <= 35), low (< 35)")+
+scale_fill_discrete(name =" Discharge_decision", labels =c("A = Admit", "S = stable-send home"))
+```
+
+Discharge decision based on based on Oxygen saturation percentage
+```{r}
+p <- ggplot(mldata2, aes(x = ordered(Oxygen_saturation, levels = c("excellent", "good", "fair")), fill = Disch_decision))
+p + geom_histogram(stat = "count", position = position_dodge()) +
+ggtitle ("Discharge decision based on Oxygen_saturation %") +
+labs(x = "Oxygen saturation level", y = "frequency", caption = "excellent (>= 98), good (>= 90 and < 98),fair (>= 80 and < 90), poor (< 80)") +
+scale_fill_discrete(name =" Discharge_decision", labels = c("A = Admit", "S = stable- send home"))
+```
+
+# Discharge decision based on last measurement of blood pressure
+```{r}
+p <- ggplot(mldata2, aes(x = ordered(Blood_pressure, levels = c("low", "mid", "high")), fill = Disch_decision))
+p + geom_histogram(stat = "count", position = position_dodge()) +
+ggtitle ("Discharge decision based on last measuremnt of Blood pressure") +
+labs(x = "Blood pressure", y = "frequency", caption = "high (> 130/90), mid (<= 130/90 and >= 90/70), low (< 90/70)") +
+scale_fill_discrete(name =" Discharge_decision", labels = c("A = Admit", "S = stable- send home"))
+```
+
+
+
+# Discharge decision based on stability of patient's surface temperature
+```{r}
+p <- ggplot(mldata2, aes(x = ordered(Surf_temp_stability, levels = c("stable", "mod-stable", "unstable")), fill = Disch_decision))
+p + geom_histogram(stat = "count", position = "stack") +
+ggtitle ("Discharge decision based on last measuremnt of Blood pressure") +
+labs(x = "Blood pressure", y = "frequency", caption = "high (> 130/90), mid (<= 130/90 and >= 90/70), low (< 90/70)") +
+scale_fill_discrete(name =" Discharge_decision", labels = c("A = Admit", "S = stable- send home"))
+```
+
+
+# Discharge decision based on stability of patient's  core temperature
+```{r}
+p <- ggplot(mldata2, aes(x = ordered(Int_Temp_Stability, levels = c("stable", "mod-stable", "unstable")), fill = Disch_decision))
+p + geom_histogram(stat = "count", position = position_dodge()) +
+ggtitle ("Discharge decision based on stability of patient's  core temperature") +
+labs(x = "Core temperature", y = "frequency") +
+scale_fill_discrete(name =" Discharge_decision", labels = c("A = Admit", "S = stable- send home"))
+```
+
+
+# Discharge decision based on stability of patient's blood pressure
+```{r}
+p <- ggplot(mldata2, aes(x = ordered(BP_stability, levels = c("stable", "mod-stable", "unstable")), fill = Disch_decision))
+p + geom_histogram(stat = "count", position = position_dodge()) +
+ggtitle ("Discharge decision based on stability of patient's blood pressure") +
+labs(x = "Blood pressure stability", y = "frequency", caption = "stable, mod-stable, unstable") +
+scale_fill_discrete(name =" Discharge_decision", labels = c("A = Admit", "S = stable- send home"))
+```
+
+# Discharge decision based on patient's perceived comfort at discharge
+```{r}
+p <- ggplot(mldata2, aes(x = ordered(Comfort, levels = c("5", "7", "10", "15")), fill = Disch_decision))
+p + geom_histogram(stat = "count", position = position_dodge()) +
+ggtitle ("Discharge decision based on patient's perceived comfort at discharge") +
+labs(x = "comfort at discharge", y = "frequency", caption = "an integer between 0 and 20") +
+scale_fill_discrete(name = "Discharge_decision", labels = c("A = Admit", "S = stable- send home"))
+```
+
+
+
+## Need to balance our data before performing and classification as our model is highly imbalanced toward patients who are admitted back into the hospital
+
+#logistic regression- Why are we doing this?
+```{r}
+logistic <- glm( Disch_decision~., family = binomial(link = "logit"), data = train)
+summary(logistic)
+#plots logistic regression models
+plot(logistic)
+```
+
+
+
+
+
+
+#SVM
+#Running algorithm using 10-fold cross validation- (this will split data into 10 different sets, of which 9 will be training set and the reamining one will be the test set)
+```{r}
+set.seed(51)
+train_control <- trainControl( method ="cv", number = 8)
+```
+
+
+#model
+```{r}
+svm_Linear <- train(Disch_decision~., data = train, method = "svmLinear", trControl=train_control)
+svm_Linear
+```
+
+
+
+#Random Forest
+#I chose random forest over other classification aproaches such as logical regression, svm and Neural networks because of the following reasons: a). It works both for categorical and continuous data, b). Random forest avoids overfitting, c) can deal with large number of features. d) helps with feature selection based on importance, and most importantly e) it is very user friendly and has only two free parameters( trees-number of trees and mtry- the number of features to consider at each split). Default parameters in the random forestare ntree = 500 and mtry = square root of the number of features.
+
+# pros and cons of random forest:
+#Pros: very easy for human to understand, trains faster than SVM, deals really well with uneven datasets, gives dood idea on the features important in the datasets hence helps in feature selection
+
+#cons: it is not as easy to visually interpret
+
+# I did not chose to use decision tree to do the classification as it is very prone to overfitting, and overfitting in our dataset is very easy due to its small size.
+  
+```{r}
+set.seed(131) 
+random_forest = randomForest(Disch_decision ~ ., data=train, ntree=200, mtry=5, importance=TRUE)
+random_forest
+varImpPlot(random_forest)
+```
+
+
+#Grid search
+
+From the gridsearch, found that the highest accuracy value was at mtry 1 with accuracy of 72%.
+```{r}
+tunegrid <- expand.grid(.mtry=c(1:10))
+control <- trainControl(method="repeatedcv", number=10, repeats=3, search="grid")
+rf_gridsearch <- train(Disch_decision~., data=mldata2, method="rf", metric="Accuracy", tuneGrid=tunegrid, trControl=control)
+print(rf_gridsearch)
+plot(rf_gridsearch)
+
+```
+
+
+
+#Test set prediction
+```{r}
+test_pred <- predict(random_forest, test_x)
+test_pred
+```
+
+# Counfusion 
+```{r}
+confusion_matrix <- confusionMatrix(test_pred, test_y)
+confusion_matrix
+```
+#ROC curve
+
+#### Numeric Metric
+****sensitivity, specificity, Accuracy, F1, AUC
+```{r}
+pred_result <- ifelse(test_pred == "A", 1, 0)
+pred_result
+
+pred <- prediction(pred_result, test_y)
+#pred
+
+
+```
+
+#F1 Score for Random forest
+```{r}
+f1_score_svm <- performance(pred, measure ="f")
+f1_score_svm
+```
+
+
+# ROC curve
+```{r}
+ROC <- performance(pred, "tpr", "fpr")
+plot(ROC)
+```
+
+# AUC
+```{r}
+auc.tmp <- performance(pred, "auc")
+auc <- as.numeric(auc.tmp@y.values)
+auc
+```
+
